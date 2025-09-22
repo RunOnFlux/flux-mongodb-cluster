@@ -1,0 +1,20 @@
+{
+  "status": "success",
+  "data": [
+    {
+      "ip": "172.30.0.2:31000",
+      "name": "mongo1",
+      "status": "online"
+    },
+    {
+      "ip": "172.30.0.3:31000",
+      "name": "mongo2",
+      "status": "online"
+    },
+    {
+      "ip": "172.30.0.4:31000",
+      "name": "mongo3",
+      "status": "online"
+    }
+  ]
+}

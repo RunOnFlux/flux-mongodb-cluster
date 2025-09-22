@@ -1,0 +1,48 @@
+# Project planning files
+plan.md
+CLAUDE.md
+
+# MongoDB data directories
+data/
+mongo*_data/
+mongo*_config/
+
+# Log files
+*.log
+logs/
+
+# Environment files
+.env
+.env.local
+
+# Docker volumes
+volumes/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build artifacts
+build/
+dist/
+
+# Test coverage
+coverage/
+*.cover
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Mock API response files (for testing)
+mock-api/apps/location/*.json
+
+# MongoDB dump files
+dump/
+*.bson
+*.metadata.json

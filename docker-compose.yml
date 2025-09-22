@@ -1,0 +1,97 @@
+version: '3.8'
+
+services:
+  mongo1:
+    build: .
+    container_name: mongo-node1
+    hostname: mongo1
+    restart: unless-stopped
+    environment:
+      - APP_NAME=test-mongo-cluster
+      - MONGO_REPLICA_SET_NAME=rs0
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=secretpassword
+      - MONGO_KEYFILE_PASSPHRASE=test-cluster-passphrase-123
+      - RECONCILE_INTERVAL=30
+      - FLUX_API_OVERRIDE=http://172.30.0.10
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo1_data:/data/db
+      - mongo1_config:/data/configdb
+    networks:
+      mongo-cluster:
+        ipv4_address: 172.30.0.2
+
+  mongo2:
+    build: .
+    container_name: mongo-node2
+    hostname: mongo2
+    restart: unless-stopped
+    environment:
+      - APP_NAME=test-mongo-cluster
+      - MONGO_REPLICA_SET_NAME=rs0
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=secretpassword
+      - MONGO_KEYFILE_PASSPHRASE=test-cluster-passphrase-123
+      - RECONCILE_INTERVAL=30
+      - FLUX_API_OVERRIDE=http://172.30.0.10
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongo2_data:/data/db
+      - mongo2_config:/data/configdb
+    networks:
+      mongo-cluster:
+        ipv4_address: 172.30.0.3
+
+  mongo3:
+    build: .
+    container_name: mongo-node3
+    hostname: mongo3
+    restart: unless-stopped
+    environment:
+      - APP_NAME=test-mongo-cluster
+      - MONGO_REPLICA_SET_NAME=rs0
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=secretpassword
+      - MONGO_KEYFILE_PASSPHRASE=test-cluster-passphrase-123
+      - RECONCILE_INTERVAL=30
+      - FLUX_API_OVERRIDE=http://172.30.0.10
+    ports:
+      - "27019:27017"
+    volumes:
+      - mongo3_data:/data/db
+      - mongo3_config:/data/configdb
+    networks:
+      mongo-cluster:
+        ipv4_address: 172.30.0.4
+
+  # Mock Flux API server for local testing
+  flux-api-mock:
+    image: nginx:alpine
+    container_name: flux-api-mock
+    volumes:
+      - ./mock-api:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8080:80"
+    networks:
+      mongo-cluster:
+        ipv4_address: 172.30.0.10
+
+networks:
+  mongo-cluster:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  mongo1_data:
+  mongo1_config:
+  mongo2_data:
+  mongo2_config:
+  mongo3_data:
+  mongo3_config:
