@@ -248,10 +248,8 @@ async function reconcileReplicaSet(peerIPs) {
     }
   }
 
-  // Recalculate member IDs to ensure they're sequential
-  config.members.forEach((member, index) => {
-    member._id = index;
-  });
+  // Note: Do NOT recalculate member IDs - MongoDB doesn't allow changing _id of existing members
+  // Member IDs don't need to be sequential, they just need to be unique
 
   // Update configuration
   try {
