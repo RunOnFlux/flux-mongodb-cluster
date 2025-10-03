@@ -1,0 +1,17 @@
+{
+  "name": "flux-mongodb-cluster",
+  "version": "1.0.0",
+  "description": "Self-configuring MongoDB replica set for Flux infrastructure",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "mongodb": "^6.3.0",
+    "node-fetch": "^2.7.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

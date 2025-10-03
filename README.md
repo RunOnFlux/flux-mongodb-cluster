@@ -1,268 +1,201 @@
 # Flux MongoDB Cluster
+![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)
+![MongoDB](https://img.shields.io/badge/MongoDB-7.0-green.svg)
+![Docker](https://img.shields.io/badge/Docker-required-blue.svg)
 
-A self-configuring and self-healing MongoDB replica set designed for deployment on Flux infrastructure. This solution provides a single Docker image that automatically discovers peer nodes via the Flux API and manages replica set membership dynamically.
-
-## Features
-
-- **Zero-Touch Deployment**: Automatically forms MongoDB replica sets using environment variables
-- **Dynamic Discovery**: Discovers peer nodes via Flux API endpoint
-- **Self-Healing**: Automatically adds new nodes and removes failed nodes
-- **Deterministic Leader Election**: Uses lowest IP address for consistent cluster initialization
-- **Smart Primary Detection**: Fast primary election detection with progressive backoff
-- **Primary Failover Handling**: Automatically detects primary changes and reassigns responsibilities
-- **Split-Brain Prevention**: Only PRIMARY nodes perform cluster management operations
-- **Secure Communication**: Implements keyfile authentication for replica set members
-- **Production Ready**: Built on MongoDB 7.0 with proper authentication and security
-- **Automatic Restart**: Containers restart on failure with configurable backoff
-- **Failure Recovery**: Handles API failures, MongoDB crashes, and network partitions
-- **Retry Logic**: Multiple retry attempts for critical operations with exponential backoff
+This project creates a self-configuring, highly-available MongoDB replica set that dynamically discovers its members through the Flux API. The cluster automatically adapts to nodes being added or removed from the environment.
 
 ## Architecture
 
-The system consists of three main components:
+- **Single Docker Image**: Contains MongoDB 7.0, Node.js, and automation controller
+- **Geographic Distribution**: Each instance runs on a different physical Flux node (potentially worldwide)
+- **Public Internet Replication**: MongoDB nodes communicate over the public internet using their public IPs
+- **Auto IP Detection**: Automatically detects public IP for proper cluster formation
+- **Dynamic Discovery**: Calls Flux API to discover cluster members' public IP addresses
+- **Auto-Configuration**: Generates replica set configuration based on live API data
+- **Self-Healing**: Periodically updates cluster membership to match API state
+- **Leader Election**: Deterministic primary selection using lowest IP address
+- **REST API**: Built-in HTTP API for cluster status and monitoring
 
-1. **Docker Image**: Based on MongoDB 7.0 with curl and jq for API interactions
-2. **Entrypoint Controller**: Manages initialization, leader election, and reconciliation
-3. **Reconciliation Loop**: Continuously syncs replica set membership with Flux API state
+**Important**: Port 27017 must be publicly exposed for inter-node replication to work across the internet.
+
+## Prerequisites
+
+- Docker
+- Docker Compose
+- Access to Flux network for API calls
 
 ## Quick Start
 
-### Building the Image
+### Production Deployment on Flux Network
 
-```bash
-docker build -t flux-mongodb:latest .
-```
+1. **Deploy on Flux**:
+   - Add a component for MongoDB
+   - Use the official Docker image: `runonflux/flux-mongodb-cluster:latest`
+   - Set environment variables for the MongoDB:
+     ```
+     APP_NAME=your-app-name
+     MONGO_REPLICA_SET_NAME=rs0
+     MONGO_INITDB_ROOT_USERNAME=admin
+     MONGO_INITDB_ROOT_PASSWORD=your-super-secret-password
+     MONGO_KEYFILE_PASSPHRASE=your-keyfile-passphrase
+     ```
+    - Set Container Data for the component to `/data/db`
 
-### Running on Flux
+2. **Connect from other Flux components**:
+   ```bash
+   # Use this connection string in your applications:
+   mongodb://admin:[PASSWORD]@flux{MONGO_COMPONENT_NAME}_{APPNAME}:27017/?replicaSet=rs0
 
-Deploy the same image on multiple Flux nodes with these environment variables:
+   # For read preference:
+   mongodb://admin:[PASSWORD]@flux{MONGO_COMPONENT_NAME}_{APPNAME}:27017/?replicaSet=rs0&readPreference=secondaryPreferred
+   ```
 
-```bash
-docker run -d \
-  -e APP_NAME="my-mongo-cluster" \
-  -e MONGO_REPLICA_SET_NAME="rs0" \
-  -e MONGO_INITDB_ROOT_USERNAME="admin" \
-  -e MONGO_INITDB_ROOT_PASSWORD="your-secure-password" \
-  -v /data/mongo:/data/db \
-  --name mongo-node \
-  flux-mongodb:latest
-```
+3. **Monitor your cluster**:
+   - Connect to any node with mongosh
+   - Check cluster status with `rs.status()`
+   - View replica set configuration with `rs.config()`
 
-### Local Testing with Docker Compose
+## Configuration
 
-For local testing, use the provided docker-compose configuration:
-
-```bash
-# Build and start the cluster
-docker-compose up --build
-
-# Connect to the cluster
-mongosh "mongodb://admin:secretpassword@localhost:27017/?replicaSet=rs0"
-
-# Check replica set status
-docker exec mongo-node1 mongosh --eval "rs.status()"
-
-# Stop the cluster
-docker-compose down
-
-# Clean up volumes
-docker-compose down -v
-```
-
-## Environment Variables
+### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `APP_NAME` | Flux application name for API queries | `mongo-cluster` |
+| `APP_NAME` | Flux application name for API discovery | `mongo-cluster` |
 | `MONGO_REPLICA_SET_NAME` | Name of the MongoDB replica set | `rs0` |
 | `MONGO_PORT` | MongoDB port | `27017` |
-| `MONGO_INITDB_ROOT_USERNAME` | Admin username (optional) | - |
-| `MONGO_INITDB_ROOT_PASSWORD` | Admin password (optional) | - |
-| `MONGO_KEYFILE_PASSPHRASE` | Passphrase for deterministic keyfile generation | - |
+| `MONGO_INITDB_ROOT_USERNAME` | Admin username | Required |
+| `MONGO_INITDB_ROOT_PASSWORD` | Admin password | Required |
+| `MONGO_KEYFILE_PASSPHRASE` | Passphrase for deterministic keyfile generation | Required |
 | `MONGO_KEYFILE_SALT` | Salt for keyfile generation | `mongodb-flux-cluster-salt` |
 | `MONGO_KEYFILE_CONTENT` | Direct keyfile content (overrides passphrase) | - |
-| `RECONCILE_INTERVAL` | Seconds between reconciliation checks | `60` |
-
-## Production Deployment
-
-For real-world deployments where nodes are on different servers, you need to share the MongoDB keyfile. See [PRODUCTION.md](PRODUCTION.md) for detailed instructions on:
-- Keyfile distribution strategies
-- Secret management integration
-- Security best practices
-- Flux-specific deployment
-
-**Quick Start for Production:**
-```bash
-# Method 1: Using a passphrase (RECOMMENDED)
-# All nodes generate the same keyfile from the same passphrase
-docker run -d \
-  -e APP_NAME="production-mongo" \
-  -e MONGO_KEYFILE_PASSPHRASE="your-secret-passphrase-here" \
-  -e MONGO_INITDB_ROOT_USERNAME="admin" \
-  -e MONGO_INITDB_ROOT_PASSWORD="secure-password" \
-  -v /data/mongo:/data/db \
-  flux-mongodb:latest
-
-# Method 2: Using pre-generated keyfile
-KEYFILE=$(openssl rand -base64 756)
-docker run -d \
-  -e APP_NAME="production-mongo" \
-  -e MONGO_KEYFILE_CONTENT="$KEYFILE" \
-  -e MONGO_INITDB_ROOT_USERNAME="admin" \
-  -e MONGO_INITDB_ROOT_PASSWORD="secure-password" \
-  -v /data/mongo:/data/db \
-  flux-mongodb:latest
-```
+| `NODE_PUBLIC_IP` | Override auto-detected public IP (optional) | Auto-detected |
+| `RECONCILE_INTERVAL` | Milliseconds between reconciliation checks | `30000` |
+| `API_PORT` | REST API port | `3000` |
+| `FLUX_API_OVERRIDE` | Override Flux API URL (for testing) | Production API |
 
 ## How It Works
 
-### 1. Initialization Phase
-- Each container generates or uses an existing keyfile for secure replica set communication
-- MongoDB daemon starts with replica set configuration
-- Container discovers its own IP address
+### Startup Process
 
-### 2. Discovery & Bootstrap Phase
-- Container queries Flux API: `https://api.runonflux.io/apps/location/{APP_NAME}`
-- Parses response to get list of all peer IPs
-- Determines leader using lowest IP address
-- Leader initializes replica set with all discovered peers
-- **Fast Primary Election**: System uses progressive backoff to quickly detect primary
-- **Smart User Creation**: Only PRIMARY nodes create admin users, preventing authentication conflicts
-- Non-leaders wait for initialization
+1. **IP Detection**: Automatically detects public IP using ipify.org or ip-api.com (can be overridden with `NODE_PUBLIC_IP` env var)
+2. **MongoDB Startup**: Generates keyfile and starts MongoDB with replica set configuration
+3. **Discovery Phase**: Calls `https://api.runonflux.io/apps/location/{APP_NAME}` to get all cluster member IPs
+4. **Leader Election**: Determines leader using lowest IP address for consistent initialization
+5. **Replica Set Init**: Leader node initializes replica set and creates admin user
+6. **REST API**: Starts HTTP API on port 3000 for monitoring
 
-### 3. Reconciliation Loop
-- **Primary-Only Operations**: Only the current PRIMARY node performs reconciliation
-- **Primary Change Detection**: Continuously monitors for primary status changes and reassigns responsibilities
-- Primary node periodically queries Flux API for current node list
-- Compares desired state (API) with current state (replica set)
-- Adds new members that appear in API
-- Removes members that disappear from API
-- **Mid-Operation Safety**: Verifies PRIMARY status before each cluster modification
-- Includes safety checks to prevent removing majority
-- **Automatic Restart**: On failures, containers restart automatically instead of exiting
+### Dynamic Membership
 
-## API Integration
+- **Background Process**: Continuously monitors Flux API (every 30 seconds by default)
+- **Automatic Removal**: Removes nodes from replica set when they're no longer in the API response
+- **Self-Registration**: New nodes automatically join the cluster when they start up
+- **Primary-Only Operations**: Only PRIMARY nodes perform cluster management operations
 
-The controller queries the Flux API endpoint to discover peers:
+### REST API Endpoints
 
+The built-in REST API provides cluster monitoring:
+
+- `GET /health` - Health check endpoint
+- `GET /status` - Full replica set status (equivalent to `rs.status()`)
+- `GET /members` - List of replica set members
+- `GET /primary` - Current primary node information
+- `GET /info` - Node information (IP, replica set name, etc.)
+
+Access the API at `http://[node-ip]:3000` (or the port specified in `API_PORT`)
+
+### Cluster Management
+
+The Node.js controller manages three main phases:
+
+- **Initialization**: Keyfile generation and MongoDB startup (handled by entrypoint.sh)
+- **Bootstrap**: IP detection, API discovery, leader election, and replica set initialization
+- **Reconciliation**: Background loop that maintains cluster membership
+
+### Access MongoDB
+
+#### Connection Strings
+
+**For connections from within Docker containers (inside the cluster network):**
 ```
-GET https://api.runonflux.io/apps/location/{APP_NAME}
+Host: flux{COMPONENT_NAME}_{APPNAME}
+Port: 27017
+Database: admin
+Username: admin
+Password: [MONGO_INITDB_ROOT_PASSWORD]
+
+Example connection string:
+mongodb://admin:[PASSWORD]@flux{MONGO_COMPONENT_NAME}_{APPNAME}:27017/?replicaSet=rs0
+
+# For read preference:
+mongodb://admin:[PASSWORD]@flux{MONGO_COMPONENT_NAME}_{APPNAME}:27017/?replicaSet=rs0&readPreference=secondaryPreferred
 ```
 
-Expected response format:
-```json
-{
-  "data": [
-    {"ip": "192.168.1.10:31000"},
-    {"ip": "192.168.1.11:31000"},
-    {"ip": "192.168.1.12:31000"}
-  ]
-}
+**For external connections (from host machine or remote clients):**
+```
+Host: localhost (or server IP)
+Port: 27017
+Database: admin
+Username: admin
+Password: [MONGO_INITDB_ROOT_PASSWORD]
+
+Example connection string:
+mongodb://admin:[PASSWORD]@localhost:27017/?replicaSet=rs0
 ```
 
-## Security Considerations
+**For local testing with multiple nodes:**
+- Node 1: `mongodb://admin:[PASSWORD]@localhost:27017/?replicaSet=rs0`
+- Node 2: `mongodb://admin:[PASSWORD]@localhost:27018/?replicaSet=rs0`
+- Node 3: `mongodb://admin:[PASSWORD]@localhost:27019/?replicaSet=rs0`
 
-- **Internal Authentication**: Replica set members authenticate using a shared keyfile
-- **Client Authentication**: Optional username/password authentication for clients
-- **Network Security**: Bind to all interfaces (`--bind_ip_all`) - ensure proper firewall rules
-- **Data Persistence**: Always mount volumes for `/data/db` to preserve data
+## Files Overview
 
-## Monitoring & Troubleshooting
+- **Dockerfile**: Docker image definition
+- **entrypoint.sh**: Controller script for cluster management
+- **docker-compose.yml**: Local testing setup
+- **nginx.conf**: Mock API server configuration
+- **mock-api/**: Mock Flux API responses
 
-### View Logs
+### Local Testing
+
+For local development and testing, this repository includes a complete mock environment:
+
+1. **Start local test cluster**:
+   ```bash
+   docker-compose up -d --build
+   ```
+
+2. **Access local services**:
+   - **Mock Flux API**: http://localhost:8080
+   - **MongoDB nodes**:
+     - Node 1: `localhost:27017`
+     - Node 2: `localhost:27018`
+     - Node 3: `localhost:27019`
+
+3. **Connect to MongoDB**:
+   ```bash
+   # Default credentials from .env
+   mongosh "mongodb://admin:secretpassword@localhost:27017/?replicaSet=rs0"
+   ```
+
+The local setup includes:
+- **3-node MongoDB replica set** with automatic failover
+- **Mock Flux API server** (nginx serving JSON files)
+- **Isolated Docker network** simulating real deployment
+- **All services** running on separate ports for testing
+
+
+### Logs
+
+Check logs for cluster operations:
 ```bash
-# Container logs (controller output)
-docker logs mongo-node
+# View container logs
+docker logs mongo-node1
 
-# MongoDB logs
-docker exec mongo-node cat /data/db/mongod.log
+# View MongoDB logs
+docker exec mongo-node1 cat /data/db/mongod.log
 ```
-
-### Check Replica Set Status
-```bash
-# Connect with authentication
-mongosh "mongodb://admin:password@localhost:27017/?replicaSet=rs0"
-
-# Check status
-rs.status()
-
-# View configuration
-rs.config()
-
-# Check if primary
-db.hello()
-```
-
-### Common Issues
-
-1. **Nodes not joining cluster**: Check network connectivity and Flux API response
-2. **Authentication failures**: Ensure all nodes have same keyfile
-3. **Primary election issues**: Verify at least one node can reach majority
-4. **API failures**: Controller preserves last-known configuration during API outages
-
-## Production Deployment
-
-### Prerequisites
-- Docker installed on all Flux nodes
-- Network connectivity between nodes on port 27017
-- Persistent storage for MongoDB data
-
-### Recommended Settings
-```bash
-docker run -d \
-  --restart=unless-stopped \
-  --memory="2g" \
-  --cpus="2" \
-  -e APP_NAME="production-mongo" \
-  -e MONGO_REPLICA_SET_NAME="rs0" \
-  -e MONGO_INITDB_ROOT_USERNAME="admin" \
-  -e MONGO_INITDB_ROOT_PASSWORD="$(openssl rand -base64 32)" \
-  -e RECONCILE_INTERVAL="30" \
-  -v /data/mongo:/data/db:rw \
-  -v /data/mongo-config:/data/configdb:rw \
-  --name mongo-node \
-  flux-mongodb:latest
-```
-
-### Backup Strategy
-- Use `mongodump` for logical backups
-- Snapshot volumes for filesystem-level backups
-- Consider MongoDB Atlas or similar for managed backups
-
-## Development
-
-### Project Structure
-```
-.
-├── Dockerfile           # Docker image definition
-├── entrypoint.sh       # Controller script
-├── docker-compose.yml  # Local testing setup
-├── nginx.conf         # Mock API server configuration
-├── mock-api/          # Mock Flux API responses
-└── README.md          # This file
-```
-
-### Testing Locally
-
-To test the reconciliation logic locally:
-
-1. Start the cluster: `docker-compose up`
-2. Simulate node failure: `docker stop mongo-node2`
-3. Watch logs: `docker logs -f mongo-node1`
-4. Bring node back: `docker start mongo-node2`
-
-## Contributing
-
-Contributions are welcome! Please consider:
-
-- Adding tests for the controller logic
-- Implementing additional safety checks
-- Adding metrics/monitoring endpoints
-- Improving error handling and logging
-
-## License
-
-This project is provided as-is for use with Flux infrastructure.
 
 ## Support
 

@@ -12,10 +12,13 @@ services:
       - MONGO_INITDB_ROOT_USERNAME=admin
       - MONGO_INITDB_ROOT_PASSWORD=secretpassword
       - MONGO_KEYFILE_PASSPHRASE=test-cluster-passphrase-123
-      - RECONCILE_INTERVAL=30
+      - MONGO_PORT=27018
+      - RECONCILE_INTERVAL=30000
+      - API_PORT=3000
       - FLUX_API_OVERRIDE=http://172.30.0.10
     ports:
-      - "27017:27017"
+      - "27018:27018"
+      - "3001:3000"
     volumes:
       - mongo1_data:/data/db
       - mongo1_config:/data/configdb
@@ -34,10 +37,13 @@ services:
       - MONGO_INITDB_ROOT_USERNAME=admin
       - MONGO_INITDB_ROOT_PASSWORD=secretpassword
       - MONGO_KEYFILE_PASSPHRASE=test-cluster-passphrase-123
-      - RECONCILE_INTERVAL=30
+      - MONGO_PORT=27018
+      - RECONCILE_INTERVAL=30000
+      - API_PORT=3000
       - FLUX_API_OVERRIDE=http://172.30.0.10
     ports:
-      - "27018:27017"
+      - "27019:27018"
+      - "3002:3000"
     volumes:
       - mongo2_data:/data/db
       - mongo2_config:/data/configdb
@@ -56,10 +62,13 @@ services:
       - MONGO_INITDB_ROOT_USERNAME=admin
       - MONGO_INITDB_ROOT_PASSWORD=secretpassword
       - MONGO_KEYFILE_PASSPHRASE=test-cluster-passphrase-123
-      - RECONCILE_INTERVAL=30
+      - MONGO_PORT=27018
+      - RECONCILE_INTERVAL=30000
+      - API_PORT=3000
       - FLUX_API_OVERRIDE=http://172.30.0.10
     ports:
-      - "27019:27017"
+      - "27020:27018"
+      - "3003:3000"
     volumes:
       - mongo3_data:/data/db
       - mongo3_config:/data/configdb
