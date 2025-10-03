@@ -17,8 +17,6 @@ This project creates a self-configuring, highly-available MongoDB replica set th
 - **Leader Election**: Deterministic primary selection using lowest IP address
 - **REST API**: Built-in HTTP API for cluster status and monitoring
 
-**Important**: Port 27017 must be publicly exposed for inter-node replication to work across the internet.
-
 ## Prerequisites
 
 - Docker
