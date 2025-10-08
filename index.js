@@ -22,7 +22,8 @@ const MONGO_USER = process.env.MONGO_INITDB_ROOT_USERNAME;
 const MONGO_PASS = process.env.MONGO_INITDB_ROOT_PASSWORD;
 const MONGO_PORT = process.env.MONGO_PORT || '27017';
 const RECONCILE_INTERVAL = parseInt(process.env.RECONCILE_INTERVAL || '30000');
-const API_PORT = parseInt(process.env.API_PORT || '3000');
+const API_PORT = parseInt(process.env.API_PORT || '3000'); // Internal port where API server listens
+const EXTERNAL_API_PORT = parseInt(process.env.EXTERNAL_API_PORT || process.env.API_PORT || '3000'); // External port for peer-to-peer communication
 const FLUX_API_URL = process.env.FLUX_API_OVERRIDE
   ? `${process.env.FLUX_API_OVERRIDE}/apps/location/${APP_NAME}`
   : `https://api.runonflux.io/apps/location/${APP_NAME}`;
@@ -107,25 +108,28 @@ async function fetchPeerIPs() {
   return allIPs.filter(ip => ip !== myIP);
 }
 
-// Check if this node can reach itself via public IP (with retries)
+// Check if this node can reach itself via hostname (with retries)
 async function canReachSelf() {
   const maxRetries = 3;
   const retryDelay = 2000; // 2 seconds between retries
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const response = await fetch(`http://${myIP}:${API_PORT}/health`, {
+      // Use hostname instead of IP for self-reachability check
+      // The hostname resolves to 127.0.0.1 (production) or private IP (local testing)
+      // Use internal API_PORT for self-check (localhost)
+      const response = await fetch(`http://${myHostname}:${API_PORT}/health`, {
         signal: AbortSignal.timeout(5000)
       });
 
       if (response.ok) {
         if (attempt > 1) {
-          log(`Self-reachability check succeeded on attempt ${attempt}`);
+          log(`Self-reachability check via ${myHostname} succeeded on attempt ${attempt}`);
         }
         return true;
       }
     } catch (error) {
-      log(`Self-reachability check attempt ${attempt}/${maxRetries} failed: ${error.message}`);
+      log(`Self-reachability check via ${myHostname} attempt ${attempt}/${maxRetries} failed: ${error.message}`);
 
       if (attempt < maxRetries) {
         log(`Retrying in ${retryDelay}ms...`);
@@ -134,7 +138,7 @@ async function canReachSelf() {
     }
   }
 
-  log(`Self-reachability check failed after ${maxRetries} attempts`);
+  log(`Self-reachability check via ${myHostname} failed after ${maxRetries} attempts`);
   return false;
 }
 
@@ -145,7 +149,8 @@ async function getReachablePeers(peerIPs) {
 
   for (const peerIP of peerIPs) {
     try {
-      const response = await fetch(`http://${peerIP}:${API_PORT}/health`, {
+      // Use EXTERNAL_API_PORT for peer-to-peer communication
+      const response = await fetch(`http://${peerIP}:${EXTERNAL_API_PORT}/health`, {
         signal: AbortSignal.timeout(3000)
       });
 
@@ -208,15 +213,15 @@ async function checkPeersForReplicaSet(peerIPs) {
 async function isLeader(peerIPs) {
   const allIPs = [myIP, ...peerIPs].sort();
 
-  // Check if we can reach ourselves - required to be leader
+  // Check if we can reach ourselves via hostname - required to be leader
   const selfReachable = await canReachSelf();
 
   if (!selfReachable) {
-    log(`This node (${myIP}) cannot reach itself via public IP - not eligible for leader`);
+    log(`This node (${myHostname}) cannot reach itself via hostname - not eligible for leader`);
     return false;
   }
 
-  log(`This node (${myIP}) can reach itself via public IP - eligible for leader`);
+  log(`This node (${myHostname}) can reach itself via hostname - eligible for leader`);
 
   // We're eligible - check if we're the lowest IP
   return allIPs[0] === myIP;
@@ -373,6 +378,31 @@ async function getReplicaSetConfig() {
   }
 }
 
+// Get the latest oplog timestamp from this node
+async function getLatestOplogTimestamp() {
+  try {
+    const local = mongoClient.db('local');
+    const oplog = local.collection('oplog.rs');
+
+    // Get the most recent oplog entry
+    const latestEntry = await oplog.find().sort({ ts: -1 }).limit(1).toArray();
+
+    if (latestEntry.length > 0) {
+      const timestamp = latestEntry[0].ts;
+      return {
+        timestamp: timestamp,
+        time: timestamp.getHighBits(), // Seconds since epoch
+        counter: timestamp.getLowBits() // Counter within that second
+      };
+    }
+
+    return null;
+  } catch (error) {
+    log(`Error getting oplog timestamp: ${error.message}`);
+    return null;
+  }
+}
+
 // Query peers about who they think is PRIMARY
 async function checkPeerPrimaryConsensus(peerIPs) {
   log('Checking peer consensus on PRIMARY...');
@@ -381,7 +411,8 @@ async function checkPeerPrimaryConsensus(peerIPs) {
 
   for (const peerIP of peerIPs) {
     try {
-      const response = await fetch(`http://${peerIP}:${API_PORT}/primary`, {
+      // Use EXTERNAL_API_PORT for peer-to-peer communication
+      const response = await fetch(`http://${peerIP}:${EXTERNAL_API_PORT}/primary`, {
         signal: AbortSignal.timeout(3000)
       });
 
@@ -408,6 +439,76 @@ async function checkPeerPrimaryConsensus(peerIPs) {
     reachablePeers,
     totalPeers: peerIPs.length
   };
+}
+
+// Find which node has the most recent data by comparing oplog timestamps
+async function findNodeWithLatestData(peerIPs) {
+  log('Checking which node has the latest data...');
+
+  const oplogData = new Map(); // Map of IP -> oplog info
+
+  // Get our own oplog timestamp
+  const myOplog = await getLatestOplogTimestamp();
+  if (myOplog) {
+    oplogData.set(myIP, {
+      hostname: myHostname,
+      time: myOplog.time,
+      counter: myOplog.counter
+    });
+    log(`My oplog timestamp: ${myOplog.time}.${myOplog.counter}`);
+  }
+
+  // Query each peer for their oplog timestamp
+  for (const peerIP of peerIPs) {
+    try {
+      // Use EXTERNAL_API_PORT for peer-to-peer communication
+      const response = await fetch(`http://${peerIP}:${EXTERNAL_API_PORT}/oplog`, {
+        signal: AbortSignal.timeout(3000)
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.timestamp) {
+          oplogData.set(peerIP, {
+            hostname: data.hostname,
+            time: data.timestamp.time,
+            counter: data.timestamp.counter
+          });
+          log(`Peer ${peerIP} oplog timestamp: ${data.timestamp.time}.${data.timestamp.counter}`);
+        }
+      }
+    } catch (error) {
+      log(`Cannot reach peer ${peerIP} for oplog check: ${error.message}`);
+    }
+  }
+
+  // Find the node with the highest timestamp
+  let latestIP = null;
+  let latestHostname = null;
+  let latestTime = 0;
+  let latestCounter = 0;
+
+  for (const [ip, data] of oplogData.entries()) {
+    if (data.time > latestTime || (data.time === latestTime && data.counter > latestCounter)) {
+      latestIP = ip;
+      latestHostname = data.hostname;
+      latestTime = data.time;
+      latestCounter = data.counter;
+    }
+  }
+
+  if (latestIP) {
+    log(`Node with latest data: ${latestHostname} (${latestIP}) - timestamp: ${latestTime}.${latestCounter}`);
+    return {
+      ip: latestIP,
+      hostname: latestHostname,
+      time: latestTime,
+      counter: latestCounter,
+      isMe: latestIP === myIP
+    };
+  }
+
+  return null;
 }
 
 // Step down and attempt to rejoin the cluster
@@ -456,10 +557,37 @@ async function stepDownAndRejoin(consensusPrimary) {
 }
 
 // Nuclear option: Wipe data and force full resync
-async function nuclearResync() {
-  log('NUCLEAR OPTION: Wiping data and forcing full resync');
+async function nuclearResync(peerIPs) {
+  log('NUCLEAR OPTION: Considering data wipe and full resync');
 
   try {
+    // SAFETY CHECK: Compare our oplog timestamp with peers
+    // Only wipe if we're behind (old/stale data) or truly out of sync
+    const latestDataNode = await findNodeWithLatestData(peerIPs);
+
+    if (latestDataNode) {
+      if (latestDataNode.isMe) {
+        log('ABORT NUCLEAR RESYNC: This node has the LATEST data!');
+        log('Peers should resync from us, not the other way around.');
+        log('This is likely a split-brain where we were the active PRIMARY.');
+        log('Waiting for peers to recognize our authority...');
+        return;
+      }
+
+      log(`Confirmed: Node ${latestDataNode.hostname} has newer data than us`);
+      log(`Their timestamp: ${latestDataNode.time}.${latestDataNode.counter}`);
+
+      const myOplog = await getLatestOplogTimestamp();
+      if (myOplog) {
+        log(`Our timestamp: ${myOplog.time}.${myOplog.counter}`);
+        const timeDiff = latestDataNode.time - myOplog.time;
+        log(`We are ${timeDiff} seconds behind`);
+      }
+    }
+
+    // Proceed with nuclear option
+    log('Proceeding with nuclear resync: Wiping data and forcing full resync');
+
     // Close MongoDB connection
     if (mongoClient) {
       await mongoClient.close();
@@ -540,7 +668,8 @@ async function reconcileReplicaSet(peerIPs) {
 
         if (!rejoinSuccess) {
           // Nuclear option: wipe data and full resync
-          await nuclearResync();
+          // Pass peerIPs so we can check who has the latest data
+          await nuclearResync(peerIPs);
         }
 
         return; // Exit reconciliation after handling split-brain
@@ -626,6 +755,16 @@ async function reconcileReplicaSet(peerIPs) {
     log('Replica set reconfigured successfully');
   } catch (error) {
     log(`Error reconfiguring replica set: ${error.message}`);
+
+    // Detect split-brain: Different replica set IDs
+    if (error.message.includes('Our replica set ID did not match') ||
+        error.message.includes('replSetId') && error.message.includes('requestTargetReplSetId')) {
+      log('SPLIT-BRAIN DETECTED: Attempting to add member from different replica set');
+      log('This indicates multiple independent replica sets were initialized');
+
+      // Trigger nuclear resync to join the correct replica set
+      await nuclearResync(peerIPs);
+    }
   }
 }
 
@@ -871,25 +1010,72 @@ async function bootstrap() {
       const totalMembers = members.length;
       const reachableMembers = members.filter(m => m.health === 1).length;
       const hasNoPrimary = !members.some(m => m.state === 1);
+      const iAmPrimary = members.some(m => m.self && m.state === 1);
 
       if (totalMembers > 1 && reachableMembers === 1 && hasNoPrimary) {
         log(`WARNING: Split-brain detected! ${reachableMembers}/${totalMembers} members reachable, no PRIMARY`);
-        log('Self-healing: Force-reconfiguring to single-node replica set');
 
-        const config = await admin.command({ replSetGetConfig: 1 });
-        const selfMember = members.find(m => m.self);
+        // SAFETY CHECK: Before force-reconfiguring, check if peers have newer data
+        // If they do, we should NOT become PRIMARY - we should resync from them
+        const peerIPs = await fetchPeerIPs();
+        const latestDataNode = await findNodeWithLatestData(peerIPs);
 
-        if (selfMember) {
-          const newConfig = {
-            ...config.config,
-            version: config.config.version + 1,
-            members: [config.config.members.find(m => m._id === selfMember._id)]
-          };
+        if (latestDataNode && !latestDataNode.isMe) {
+          log(`ABORT force-reconfig: Peer ${latestDataNode.hostname} has newer data`);
+          log(`Peer timestamp: ${latestDataNode.time}.${latestDataNode.counter}`);
+          const myOplog = await getLatestOplogTimestamp();
+          if (myOplog) {
+            log(`Our timestamp: ${myOplog.time}.${myOplog.counter}`);
+            const timeDiff = latestDataNode.time - myOplog.time;
+            log(`We are ${timeDiff} seconds behind - waiting to resync from peers`);
+          }
+          log('Will wait for peers to add us back to the replica set');
+        } else {
+          log('Self-healing: Force-reconfiguring to single-node replica set');
 
-          await admin.command({ replSetReconfig: newConfig, force: true });
-          log('Self-healing: Successfully reconfigured as single-node replica set');
-          log('Waiting for PRIMARY election...');
-          await new Promise(resolve => setTimeout(resolve, 5000));
+          const config = await admin.command({ replSetGetConfig: 1 });
+          const selfMember = members.find(m => m.self);
+
+          if (selfMember) {
+            const newConfig = {
+              ...config.config,
+              version: config.config.version + 1,
+              members: [config.config.members.find(m => m._id === selfMember._id)]
+            };
+
+            await admin.command({ replSetReconfig: newConfig, force: true });
+            log('Self-healing: Successfully reconfigured as single-node replica set');
+            log('Waiting for PRIMARY election...');
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          }
+        }
+      } else if (iAmPrimary) {
+        // I'm PRIMARY - check if peers have newer data than me
+        // This handles the case where old PRIMARY comes back after new PRIMARY was elected
+        const peerIPs = await fetchPeerIPs();
+        if (peerIPs.length > 0) {
+          const latestDataNode = await findNodeWithLatestData(peerIPs);
+
+          if (latestDataNode && !latestDataNode.isMe) {
+            log(`WARNING: I am PRIMARY but peer ${latestDataNode.hostname} has newer data!`);
+            log(`Peer timestamp: ${latestDataNode.time}.${latestDataNode.counter}`);
+            const myOplog = await getLatestOplogTimestamp();
+            if (myOplog) {
+              log(`Our timestamp: ${myOplog.time}.${myOplog.counter}`);
+              const timeDiff = latestDataNode.time - myOplog.time;
+              log(`We are ${timeDiff} seconds behind`);
+
+              if (timeDiff > 0) {
+                log('Old PRIMARY detected: Stepping down to allow newer PRIMARY to take over');
+                try {
+                  await admin.command({ replSetStepDown: 300 }); // Step down for 5 minutes
+                  log('Successfully stepped down as PRIMARY');
+                } catch (stepDownError) {
+                  log(`Step down error: ${stepDownError.message}`);
+                }
+              }
+            }
+          }
         }
       }
     } catch (error) {
@@ -948,10 +1134,35 @@ app.get('/primary', async (req, res) => {
 app.get('/info', (req, res) => {
   res.json({
     myIP,
+    myHostname,
     replicaSet: REPLICA_SET_NAME,
     appName: APP_NAME,
     reconcileInterval: RECONCILE_INTERVAL
   });
+});
+
+app.get('/oplog', async (req, res) => {
+  try {
+    const oplog = await getLatestOplogTimestamp();
+    if (oplog) {
+      res.json({
+        hostname: myHostname,
+        ip: myIP,
+        timestamp: {
+          time: oplog.time,
+          counter: oplog.counter
+        }
+      });
+    } else {
+      res.json({
+        hostname: myHostname,
+        ip: myIP,
+        timestamp: null
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Start server
