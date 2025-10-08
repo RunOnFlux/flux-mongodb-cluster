@@ -107,17 +107,101 @@ async function fetchPeerIPs() {
   return allIPs.filter(ip => ip !== myIP);
 }
 
-// Check if this node can reach itself via public IP
+// Check if this node can reach itself via public IP (with retries)
 async function canReachSelf() {
-  try {
-    const response = await fetch(`http://${myIP}:${API_PORT}/health`, {
-      signal: AbortSignal.timeout(5000)
-    });
-    return response.ok;
-  } catch (error) {
-    log(`Self-reachability check failed: ${error.message}`);
-    return false;
+  const maxRetries = 3;
+  const retryDelay = 2000; // 2 seconds between retries
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(`http://${myIP}:${API_PORT}/health`, {
+        signal: AbortSignal.timeout(5000)
+      });
+
+      if (response.ok) {
+        if (attempt > 1) {
+          log(`Self-reachability check succeeded on attempt ${attempt}`);
+        }
+        return true;
+      }
+    } catch (error) {
+      log(`Self-reachability check attempt ${attempt}/${maxRetries} failed: ${error.message}`);
+
+      if (attempt < maxRetries) {
+        log(`Retrying in ${retryDelay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+      }
+    }
   }
+
+  log(`Self-reachability check failed after ${maxRetries} attempts`);
+  return false;
+}
+
+// Check which peers are reachable
+async function getReachablePeers(peerIPs) {
+  log('Checking which peer nodes are reachable...');
+  const reachable = [];
+
+  for (const peerIP of peerIPs) {
+    try {
+      const response = await fetch(`http://${peerIP}:${API_PORT}/health`, {
+        signal: AbortSignal.timeout(3000)
+      });
+
+      if (response.ok) {
+        reachable.push(peerIP);
+        log(`Peer ${peerIP} is reachable`);
+      }
+    } catch (error) {
+      log(`Peer ${peerIP} is unreachable: ${error.message}`);
+    }
+  }
+
+  log(`Found ${reachable.length}/${peerIPs.length} reachable peers`);
+  return reachable;
+}
+
+// Check if any peer has an initialized replica set
+async function checkPeersForReplicaSet(peerIPs) {
+  log('Checking if any peer nodes have an initialized replica set...');
+
+  for (const peerIP of peerIPs) {
+    const peerHostname = `mongo-${peerIP.replace(/\./g, '-')}.mongo-cluster`;
+    const peerUri = `mongodb://${peerHostname}:${MONGO_PORT}`;
+
+    try {
+      log(`Checking peer: ${peerHostname}...`);
+      const peerClient = new MongoClient(peerUri, {
+        serverSelectionTimeoutMS: 3000,
+        connectTimeoutMS: 3000
+      });
+
+      await peerClient.connect();
+
+      try {
+        const admin = peerClient.db('admin');
+        const status = await admin.command({ replSetGetStatus: 1 });
+
+        // If we get here, peer has an initialized replica set
+        await peerClient.close();
+        log(`Peer ${peerHostname} has an initialized replica set`);
+        return true;
+      } catch (cmdError) {
+        await peerClient.close();
+        // NotYetInitialized means no replica set, continue checking
+        if (cmdError.codeName !== 'NotYetInitialized') {
+          log(`Peer ${peerHostname} error: ${cmdError.message}`);
+        }
+      }
+    } catch (connError) {
+      // Can't connect to this peer, skip
+      log(`Cannot connect to peer ${peerHostname}: ${connError.message}`);
+    }
+  }
+
+  log('No peers have an initialized replica set');
+  return false;
 }
 
 // Check if this node is the leader (lowest reachable IP)
@@ -289,6 +373,124 @@ async function getReplicaSetConfig() {
   }
 }
 
+// Query peers about who they think is PRIMARY
+async function checkPeerPrimaryConsensus(peerIPs) {
+  log('Checking peer consensus on PRIMARY...');
+  const primaryVotes = new Map(); // Map of hostname -> count
+  let reachablePeers = 0;
+
+  for (const peerIP of peerIPs) {
+    try {
+      const response = await fetch(`http://${peerIP}:${API_PORT}/primary`, {
+        signal: AbortSignal.timeout(3000)
+      });
+
+      if (response.ok) {
+        reachablePeers++;
+        const data = await response.json();
+        const peerThinksPrimary = data.primary; // hostname:port format
+
+        if (peerThinksPrimary) {
+          const count = primaryVotes.get(peerThinksPrimary) || 0;
+          primaryVotes.set(peerThinksPrimary, count + 1);
+          log(`Peer ${peerIP} reports PRIMARY as: ${peerThinksPrimary}`);
+        } else {
+          log(`Peer ${peerIP} reports no PRIMARY`);
+        }
+      }
+    } catch (error) {
+      log(`Cannot reach peer ${peerIP} for consensus check: ${error.message}`);
+    }
+  }
+
+  return {
+    primaryVotes,
+    reachablePeers,
+    totalPeers: peerIPs.length
+  };
+}
+
+// Step down and attempt to rejoin the cluster
+async function stepDownAndRejoin(consensusPrimary) {
+  log('SPLIT-BRAIN DETECTED: Attempting to step down and rejoin cluster');
+
+  try {
+    // Step down as PRIMARY
+    log('Stepping down as PRIMARY...');
+    const admin = mongoClient.db('admin');
+
+    try {
+      await admin.command({ replSetStepDown: 60 }); // Step down for 60 seconds
+      log('Successfully stepped down as PRIMARY');
+    } catch (stepDownError) {
+      // If we're not primary, this will fail - that's okay
+      log(`Step down result: ${stepDownError.message}`);
+    }
+
+    // Wait for cluster to stabilize
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    // Try to rejoin by forcing a resync with the majority's primary
+    log(`Attempting to reconnect and sync with consensus PRIMARY: ${consensusPrimary}`);
+
+    // Reconnect to MongoDB
+    await mongoClient.close();
+    await connectMongo();
+
+    // Check if we successfully joined
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    const status = await getReplicaSetStatus();
+
+    if (!status.notInitialized && !status.needsAuth) {
+      log('Successfully rejoined the cluster');
+      return true;
+    }
+
+    log('Failed to rejoin cluster normally, initiating nuclear option...');
+    return false;
+
+  } catch (error) {
+    log(`Error during step-down and rejoin: ${error.message}`);
+    return false;
+  }
+}
+
+// Nuclear option: Wipe data and force full resync
+async function nuclearResync() {
+  log('NUCLEAR OPTION: Wiping data and forcing full resync');
+
+  try {
+    // Close MongoDB connection
+    if (mongoClient) {
+      await mongoClient.close();
+      mongoClient = null;
+    }
+
+    // Stop MongoDB process
+    log('Stopping MongoDB process...');
+    await execAsync('pkill -SIGTERM mongod');
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    // Wipe data directory (preserve logs)
+    log('Wiping /data/db directory...');
+    await execAsync('rm -rf /data/db/*');
+
+    // Recreate necessary directories
+    await execAsync('mkdir -p /data/db');
+
+    log('Data wiped. Container will restart and resync from scratch.');
+    log('Exiting to trigger container restart...');
+
+    // Exit container - orchestrator will restart it
+    process.exit(1);
+
+  } catch (error) {
+    log(`FATAL: Nuclear resync failed: ${error.message}`);
+    log('Manual intervention required');
+    throw error;
+  }
+}
+
 // Reconcile replica set membership
 async function reconcileReplicaSet(peerIPs) {
   // Update /etc/hosts with peer hostnames (needed for DNS resolution)
@@ -299,6 +501,55 @@ async function reconcileReplicaSet(peerIPs) {
   if (!isPrimaryNow) {
     log('Not primary, skipping reconciliation');
     return;
+  }
+
+  // SPLIT-BRAIN DETECTION: Only PRIMARY nodes check peer consensus
+  // This prevents split-brain scenarios where multiple nodes think they're primary
+  const allIPs = await fetchAllIPs();
+  const totalKnownNodes = allIPs.length;
+
+  if (totalKnownNodes > 1) {
+    const consensus = await checkPeerPrimaryConsensus(peerIPs);
+    const { primaryVotes, reachablePeers, totalPeers } = consensus;
+
+    // Calculate majority threshold (>50% of ALL known nodes)
+    const majorityThreshold = Math.floor(totalKnownNodes / 2) + 1;
+
+    log(`Consensus check: ${reachablePeers} reachable peers out of ${totalPeers} total (${totalKnownNodes} known nodes)`);
+
+    // Check if majority of peers agree on a different PRIMARY
+    let consensusPrimary = null;
+    let consensusCount = 0;
+
+    for (const [primary, count] of primaryVotes.entries()) {
+      if (count >= majorityThreshold) {
+        consensusPrimary = primary;
+        consensusCount = count;
+        break;
+      }
+    }
+
+    if (consensusPrimary) {
+      const myPrimaryHost = `${myHostname}:${MONGO_PORT}`;
+
+      if (consensusPrimary !== myPrimaryHost) {
+        log(`SPLIT-BRAIN DETECTED: ${consensusCount}/${totalKnownNodes} nodes think ${consensusPrimary} is PRIMARY, but I think I am (${myPrimaryHost})`);
+
+        // Attempt to step down and rejoin
+        const rejoinSuccess = await stepDownAndRejoin(consensusPrimary);
+
+        if (!rejoinSuccess) {
+          // Nuclear option: wipe data and full resync
+          await nuclearResync();
+        }
+
+        return; // Exit reconciliation after handling split-brain
+      } else {
+        log(`Consensus confirmed: Majority agrees I am PRIMARY`);
+      }
+    } else {
+      log(`No majority consensus on PRIMARY (need ${majorityThreshold}/${totalKnownNodes} votes)`);
+    }
   }
 
   // Try to get config, if auth fails, reconnect
@@ -482,6 +733,14 @@ async function bootstrap() {
     await updateHostsFile(peerIPs);
   }
 
+  // Add random startup delay (0-10 seconds) to prevent simultaneous initialization
+  // This helps avoid race conditions when multiple nodes start at the same time
+  if (peerIPs.length > 0) {
+    const delay = Math.floor(Math.random() * 10000);
+    log(`Adding startup jitter: ${delay}ms to prevent race conditions`);
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+
   // Connect to MongoDB
   const client = await connectMongo();
   if (!client) {
@@ -502,35 +761,91 @@ async function bootstrap() {
 
     // Fetch peers and determine leader
     const peerIPs = await fetchPeerIPs();
-    const leader = await isLeader(peerIPs);
 
-    if (leader) {
-      log('This node is the leader, initializing replica set');
-      await initializeReplicaSet();
-    } else {
-      log('Not the leader, waiting for replica set to be initialized by leader');
+    // SAFETY CHECK: Before initializing, check if any peer already has a replica set
+    // This prevents a new node with lower IP from creating a conflicting replica set
+    const peerHasReplicaSet = await checkPeersForReplicaSet(peerIPs);
 
-      // Wait for leader to initialize (poll every 10 seconds)
+    if (peerHasReplicaSet) {
+      log('A peer node already has an initialized replica set, waiting to join...');
+      // Wait for this node to be added to the replica set
       let initialized = false;
       for (let i = 0; i < 30; i++) { // Max 5 minutes
         await new Promise(resolve => setTimeout(resolve, 10000));
         const newStatus = await getReplicaSetStatus();
         if (!newStatus.notInitialized) {
           initialized = true;
-          log('Replica set has been initialized by leader');
+          log('Successfully joined existing replica set');
           break;
         }
-        log('Still waiting for leader to initialize replica set...');
+        log('Waiting to be added to existing replica set...');
       }
 
       if (!initialized) {
-        log('WARNING: Replica set not initialized after 5 minutes, continuing anyway');
+        log('WARNING: Not added to replica set after 5 minutes');
       }
 
-      // Reconnect with authentication now that replica set is initialized
+      // Reconnect with authentication
       log('Reconnecting with authentication...');
       await mongoClient.close();
       await connectMongo();
+    } else {
+      // No peer has a replica set, proceed with leader election
+      const leader = await isLeader(peerIPs);
+
+      if (leader) {
+        log('This node is the leader, initializing replica set');
+        await initializeReplicaSet();
+      } else {
+        log('Not the leader, waiting for replica set to be initialized by leader');
+
+        // Wait for leader to initialize (poll every 10 seconds)
+        let initialized = false;
+        for (let i = 0; i < 30; i++) { // Max 5 minutes
+          await new Promise(resolve => setTimeout(resolve, 10000));
+          const newStatus = await getReplicaSetStatus();
+          if (!newStatus.notInitialized) {
+            initialized = true;
+            log('Replica set has been initialized by leader');
+            break;
+          }
+          log('Still waiting for leader to initialize replica set...');
+        }
+
+        if (!initialized) {
+          log('WARNING: Replica set not initialized after 5 minutes');
+          log('Checking if leader is reachable or if we should take over...');
+
+          // Check which peers are actually reachable
+          const reachablePeers = await getReachablePeers(peerIPs);
+          const reachableIPs = [myIP, ...reachablePeers].sort();
+
+          log(`Reachable nodes: ${reachableIPs.join(', ')}`);
+
+          // If we're the lowest reachable IP, become the leader
+          if (reachableIPs[0] === myIP) {
+            log('This node is the lowest reachable IP, taking over as leader');
+            const canBeLeader = await canReachSelf();
+
+            if (canBeLeader) {
+              log('Self-reachability check passed, initializing replica set');
+              await initializeReplicaSet();
+              initialized = true;
+            } else {
+              log('ERROR: Cannot reach self, cannot become leader');
+            }
+          } else {
+            log(`Lowest reachable IP is ${reachableIPs[0]}, continuing to wait...`);
+          }
+        }
+
+        if (initialized) {
+          // Reconnect with authentication now that replica set is initialized
+          log('Reconnecting with authentication...');
+          await mongoClient.close();
+          await connectMongo();
+        }
+      }
     }
   } else {
     log('Replica set already initialized');
