@@ -1,9 +1,9 @@
 # Use official MongoDB 7.0 as base image
 FROM mongo:7.0
 
-# Install Node.js 18.x and npm with retry logic
+# Install Node.js 18.x, iproute2, and other required packages
 RUN apt-get update && \
-    apt-get install -y curl ca-certificates gnupg && \
+    apt-get install -y curl ca-certificates gnupg iproute2 && \
     mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_18.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list && \
@@ -13,6 +13,9 @@ RUN apt-get update && \
 
 # Create app directory
 WORKDIR /app
+
+# Copy version file
+COPY VERSION /app/VERSION
 
 # Copy package files and install dependencies
 COPY package.json package-lock.json* ./

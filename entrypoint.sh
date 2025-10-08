@@ -124,6 +124,12 @@ trap trap_shutdown SIGTERM SIGINT
 
 # Main execution
 main() {
+    # Display version
+    if [ -f "/app/VERSION" ]; then
+        VERSION=$(cat /app/VERSION)
+        log "VERSION: ${VERSION}"
+    fi
+
     log "REPLICA_SET: ${MONGO_REPLICA_SET_NAME}"
 
     # Setup keyfile for replica set authentication
@@ -132,22 +138,121 @@ main() {
         exit 1
     fi
 
+    # MongoDB needs to bind to all interfaces for replica set to work
+    # In local testing: nodes communicate via Docker network IPs
+    # In production: nodes behind NAT, public IP doesn't exist on container
+    BIND_MODE="--bind_ip_all"
+
+    if [ -n "$TEST_PUBLIC_IP" ]; then
+        log "TEST MODE: MongoDB will bind to all interfaces (public IP ${TEST_PUBLIC_IP} is NAT'd)"
+        PUBLIC_IP="$TEST_PUBLIC_IP"
+    elif [ -n "$FLUX_API_OVERRIDE" ]; then
+        log "Local testing mode: MongoDB will bind to all interfaces (Docker network)"
+        # In local testing, use private IP for hostname mapping
+        PRIVATE_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n1)
+        if [ -n "$PRIVATE_IP" ]; then
+            PUBLIC_IP="$PRIVATE_IP"
+            log "Using private IP for hostname mapping: $PUBLIC_IP"
+        fi
+    else
+        log "Production mode: MongoDB will bind to all interfaces (behind NAT)"
+        # Detect public IP for /etc/hosts mapping
+        PUBLIC_IP=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null || echo "")
+    fi
+
+    # Create a hostname from the IP for replica set configuration
+    # Format: mongo-144-76-19-203.mongo-cluster (or mongo-172-30-0-2.mongo-cluster for local)
+    # This hostname will resolve to localhost (production) or private IP (local testing)
+    if [ -n "$PUBLIC_IP" ]; then
+        PUBLIC_HOSTNAME="mongo-${PUBLIC_IP//./-}.mongo-cluster"
+
+        # In local testing, map to private IP itself (MongoDB binds to all interfaces)
+        # In production, map to 127.0.0.1 (for NAT hairpin workaround)
+        if [ -n "$FLUX_API_OVERRIDE" ]; then
+            HOSTNAME_IP="$PUBLIC_IP"
+        else
+            HOSTNAME_IP="127.0.0.1"
+        fi
+
+        # Add hostname to /etc/hosts
+        if ! grep -q "$PUBLIC_HOSTNAME" /etc/hosts 2>/dev/null; then
+            echo "$HOSTNAME_IP $PUBLIC_HOSTNAME" >> /etc/hosts
+            log "Added $PUBLIC_HOSTNAME -> $HOSTNAME_IP in /etc/hosts for self-connection"
+        fi
+
+        # Ensure /etc/hosts takes priority over DNS
+        if [ -f /etc/nsswitch.conf ]; then
+            if grep -q "^hosts:.*dns.*files" /etc/nsswitch.conf; then
+                log "Fixing /etc/nsswitch.conf to prioritize /etc/hosts over DNS"
+                sed -i 's/^hosts:.*/hosts: files dns/' /etc/nsswitch.conf
+            fi
+        fi
+    fi
+
+    # Configure oplog size (default 2048MB for better rollback protection)
+    OPLOG_SIZE="${MONGO_OPLOG_SIZE:-2048}"
+
+    # Configure write concern (set MONGO_WRITE_CONCERN_MAJORITY=true to enable)
+    WRITE_CONCERN_PARAMS=""
+    if [ "${MONGO_WRITE_CONCERN_MAJORITY}" = "true" ]; then
+        WRITE_CONCERN_PARAMS="--setParameter enableDefaultWriteConcernUpdatesForInitiate=true"
+        log "Write concern majority enabled (may impact performance)"
+    fi
+
     # Start MongoDB with keyfile authentication
-    log "Starting MongoDB with keyfile authentication..."
+    log "Starting MongoDB with keyfile authentication (oplog: ${OPLOG_SIZE}MB)..."
     mongod \
         --replSet "${MONGO_REPLICA_SET_NAME}" \
-        --bind_ip_all \
+        ${BIND_MODE} \
         --port "${MONGO_PORT}" \
         --keyFile "${KEYFILE_PATH}" \
         --dbpath /data/db \
         --logpath /data/db/mongod.log \
         --logappend \
+        --oplogSize ${OPLOG_SIZE} \
+        --setParameter "skipShardingConfigurationChecks=true" \
+        ${WRITE_CONCERN_PARAMS} \
         --fork
 
     # Wait for MongoDB to be ready
     if ! wait_for_mongo; then
-        log "ERROR: MongoDB failed to start"
-        exit 1
+        # Check if MongoDB crashed due to rollback failure
+        if grep -q "Invariant failure.*commonPointOpTime" /data/db/mongod.log 2>/dev/null || \
+           grep -q "aborting after invariant.*failure" /data/db/mongod.log 2>/dev/null; then
+            log "ERROR: MongoDB crashed due to rollback failure"
+            log "RECOVERY: Data corrupted beyond repair, performing automatic recovery..."
+
+            # Backup corrupted data
+            BACKUP_DIR="/data/db.corrupted.$(date +%s)"
+            mv /data/db "$BACKUP_DIR" 2>/dev/null || true
+            log "Corrupted data backed up to: $BACKUP_DIR"
+
+            # Create fresh data directory
+            mkdir -p /data/db
+            chown -R mongodb:mongodb /data/db
+
+            log "Starting MongoDB with fresh data - will resync from primary..."
+            mongod \
+                --replSet "${MONGO_REPLICA_SET_NAME}" \
+                ${BIND_MODE} \
+                --port "${MONGO_PORT}" \
+                --keyFile "${KEYFILE_PATH}" \
+                --dbpath /data/db \
+                --logpath /data/db/mongod.log \
+                --oplogSize ${OPLOG_SIZE} \
+                --setParameter "skipShardingConfigurationChecks=true" \
+                ${WRITE_CONCERN_PARAMS} \
+                --fork
+
+            # Wait again
+            if ! wait_for_mongo; then
+                log "ERROR: MongoDB failed to start even after recovery"
+                exit 1
+            fi
+        else
+            log "ERROR: MongoDB failed to start (unknown reason)"
+            exit 1
+        fi
     fi
 
     # Note: User creation will be handled by Node.js after replica set initialization

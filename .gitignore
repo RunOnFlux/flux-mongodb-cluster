@@ -1,6 +1,12 @@
 # Project planning files
 plan.md
 CLAUDE.md
+.claude/
+.claude/settings.local.json
+
+# Test files and dependencies
+tests/
+node_modules/
 
 # MongoDB data directories
 data/

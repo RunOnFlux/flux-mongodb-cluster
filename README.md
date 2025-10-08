@@ -69,6 +69,8 @@ This project creates a self-configuring, highly-available MongoDB replica set th
 | `MONGO_KEYFILE_SALT` | Salt for keyfile generation | `mongodb-flux-cluster-salt` |
 | `MONGO_KEYFILE_CONTENT` | Direct keyfile content (overrides passphrase) | - |
 | `NODE_PUBLIC_IP` | Override auto-detected public IP (optional) | Auto-detected |
+| `MONGO_OPLOG_SIZE` | Oplog size in MB (larger = better rollback protection) | `2048` |
+| `MONGO_WRITE_CONCERN_MAJORITY` | Enable write concern majority (set to `true`) | Disabled |
 | `RECONCILE_INTERVAL` | Milliseconds between reconciliation checks | `30000` |
 | `API_PORT` | REST API port | `3000` |
 | `FLUX_API_OVERRIDE` | Override Flux API URL (for testing) | Production API |
