@@ -37,13 +37,11 @@ This project creates a self-configuring, highly-available MongoDB replica set th
 
 
 Key Points:
-• Each application instance connects ONLY to its local MongoDB instance directly (not to Replica Set)
+• Each application instance connects ONLY to its local MongoDB instance directly
 • MongoDB instances replicate data across nodes via public internet
 • Only PRIMARY accepts writes; SECONDARY nodes are read-only
 • Applications must use proper connection strings for automatic failover
 ```
-
-#### Important: Read/Write Behavior
 
 **MongoDB Replica Set Behavior:**
 - RIMARY node: Accepts both READ and WRITE operations
