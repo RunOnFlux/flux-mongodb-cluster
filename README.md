@@ -27,7 +27,61 @@ This project creates a self-configuring, highly-available MongoDB replica set th
 
 ### Production Deployment on Flux Network
 
-1. **Deploy on Flux**:
+#### Architecture Overview
+
+```
+   ┌──────────────────┐       ┌──────────────────┐       ┌──────────────────┐
+   │      Node 1      │       │      Node 2      │       │       Node 3     │
+   │  ┌────────────┐  │       │  ┌────────────┐  │       │  ┌────────────┐  │
+   │  │  Your App  │  │       │  │  Your App  │  │       │  │  Your App  │  │
+   │  │ (Component)│  │       │  │ (Component)│  │       │  │ (Component)│  │
+   │  └─────┬──────┘  │       │  └─────┬──────┘  │       │  └─────┬──────┘  │
+   │  ┌─────▼──────┐  │       │  ┌─────▼──────┐  │       │  ┌─────▼──────┐  │
+   │  │  MongoDB   │  │       │  │  MongoDB   │  │       │  │  MongoDB   │  │
+   │  │  PRIMARY   │◄─┼───────┼─►│ SECONDARY  │◄─┼───────┼─►│ SECONDARY  │  │
+   │  │(Read+Write)│  │       │  │ (Read-Only)│  │       │  │ (Read-Only)│  │
+   │  └────────────┘  │       │  └────────────┘  │       │  └────────────┘  │
+   └──────────────────┘       └──────────────────┘       └──────────────────┘
+            │                          │                          │ 
+            └──────────────────────────┼──────────────────────────┘
+                                       │ 
+                            Replication via Public Internet
+
+
+Key Points:
+• Each application instance connects ONLY to its local MongoDB instance directly (not to Replica Set)
+• MongoDB instances replicate data across nodes via public internet
+• Only PRIMARY accepts writes; SECONDARY nodes are read-only
+• Applications must use proper connection strings for automatic failover
+```
+
+#### Important: Read/Write Behavior
+
+**⚠️ MongoDB Replica Set Behavior:**
+- **PRIMARY node**: Accepts both READ and WRITE operations
+- **SECONDARY nodes**: Accept READ operations only (writes are rejected)
+- **Automatic Failover**: If PRIMARY fails, a SECONDARY is automatically elected as new PRIMARY
+
+**Application Implementation Requirements:**
+1. **Use replica set connection string** (not direct connection):
+   ```
+   mongodb://admin:password@fluxMONGO_APPNAME:27017/?replicaSet=rs0
+   ```
+   This allows automatic failover when PRIMARY changes.
+
+2. **Handle write failures gracefully**:
+   - If your app connects to a SECONDARY and tries to write, it will receive a `NotWritablePrimary` error
+   - Use replica set aware drivers that automatically route writes to PRIMARY
+
+3. **Read preference options**:
+   - `primary` (default): All reads go to PRIMARY
+   - `primaryPreferred`: Read from PRIMARY, fallback to SECONDARY if unavailable
+   - `secondary`: Read from SECONDARY only
+   - `secondaryPreferred`: Read from SECONDARY, fallback to PRIMARY if no SECONDARY available
+
+#### Deployment Steps
+
+1. **Deploy MongoDB Cluster on Flux**:
    - Add a component for MongoDB
    - Use the official Docker image: `runonflux/flux-mongodb-cluster:latest`
    - Set environment variables for the MongoDB:
@@ -38,21 +92,37 @@ This project creates a self-configuring, highly-available MongoDB replica set th
      MONGO_INITDB_ROOT_PASSWORD=your-super-secret-password
      MONGO_KEYFILE_PASSPHRASE=your-keyfile-passphrase
      ```
-    - Set Container Data for the component to `/data/db`
+   - Set Container Data for the component to `/data/db`
+   - Deploy 3 or more instances for high availability
 
-2. **Connect from other Flux components**:
+2. **Deploy Your Application on Flux**:
+   - Add a component for your application
+   - Use your application's Docker image
+   - Set MongoDB connection string to point to local MongoDB instance:
+     ```
+     MONGODB_URI=mongodb://admin:password@fluxMONGO_APPNAME:27017/?replicaSet=rs0
+     ```
+   - Deploy the same number of instances as MongoDB (1:1 ratio)
+
+3. **Connection String Format**:
    ```bash
-   # Use this connection string in your applications:
+   # Basic connection (automatic failover enabled)
    mongodb://admin:[PASSWORD]@flux{MONGO_COMPONENT_NAME}_{APPNAME}:27017/?replicaSet=rs0
 
-   # For read preference:
-   mongodb://admin:[PASSWORD]@flux{MONGO_COMPONENT_NAME}_{APPNAME}:27017/?replicaSet=rs0&readPreference=secondaryPreferred
+   # With read preference (recommended for read-heavy workloads)
+   mongodb://admin:[PASSWORD]@flux{MONGO_COMPONENT_NAME}_{APPNAME}:27017/?replicaSet=rs0&readPreference=primaryPreferred
    ```
 
-3. **Monitor your cluster**:
+   **Important**: Always include `?replicaSet=rs0` in the connection string. This enables:
+   - Automatic PRIMARY discovery
+   - Automatic failover when PRIMARY changes
+   - Proper routing of read/write operations
+
+4. **Monitor your cluster**:
    - Connect to any node with mongosh
    - Check cluster status with `rs.status()`
    - View replica set configuration with `rs.config()`
+   - Use REST API endpoints (see API Endpoints section below)
 
 ## Configuration
 
