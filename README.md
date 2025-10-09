@@ -45,10 +45,10 @@ Key Points:
 
 #### Important: Read/Write Behavior
 
-**⚠️ MongoDB Replica Set Behavior:**
-- **PRIMARY node**: Accepts both READ and WRITE operations
-- **SECONDARY nodes**: Accept READ operations only (writes are rejected)
-- **Automatic Failover**: If PRIMARY fails, a SECONDARY is automatically elected as new PRIMARY
+**MongoDB Replica Set Behavior:**
+- RIMARY node: Accepts both READ and WRITE operations
+- SECONDARY nodes: Accept READ operations only (writes are rejected)
+- Automatic Failover: If PRIMARY fails, a SECONDARY is automatically elected as new PRIMARY
 
 **Application Implementation Requirements:**
 1. **Use this format for connection string** :
@@ -57,14 +57,11 @@ Key Points:
    ```
 
 2. **Handle write failures gracefully**:
-   - If your app connects to a SECONDARY and tries to write, it will receive a `NotWritablePrimary` error
-   - you can use 
+   - If your app connects to a SECONDARY and tries to write, MongoDB will reject it with an error:
+     - Error code: `NotWritablePrimary` (MongoDB 7.0+)
+     - Error message: `"not primary"` or `"not master"` (older versions)
+   - To check if connected node is PRIMARY or SECONDARY, use the `hello` command.
 
-3. **Read preference options**:
-   - `primary` (default): All reads go to PRIMARY
-   - `primaryPreferred`: Read from PRIMARY, fallback to SECONDARY if unavailable
-   - `secondary`: Read from SECONDARY only
-   - `secondaryPreferred`: Read from SECONDARY, fallback to PRIMARY if no SECONDARY available
 
 #### Deployment Steps
 
@@ -82,10 +79,10 @@ Key Points:
    - Set Container Data for the component to `/data/db`
    - Deploy 3 or more instances for high availability
 
-2. **Deploy Your Application on Flux**:
+2. **Add your Application (optional)**:
    - Add a component for your application
    - Use your application's Docker image
-   - Set MongoDB connection string to point to local MongoDB instance:
+   - Use this MongoDB connection string to point to local MongoDB instance:
      ```
      mongodb://admin:[PASSWORD]@flux{MONGO_COMPONENT_NAME}_{APPNAME}:27017/?directConnection=true&authSource=admin
      ```
@@ -162,28 +159,25 @@ The Node.js controller manages three main phases:
 **For connections from within Docker containers (inside the cluster network):**
 ```
 Host: flux{COMPONENT_NAME}_{APPNAME}
-Port: 27017
+Port: [MONGO_PORT]
 Database: admin
 Username: admin
 Password: [MONGO_INITDB_ROOT_PASSWORD]
 
 Example connection string:
-mongodb://admin:[PASSWORD]@flux{MONGO_COMPONENT_NAME}_{APPNAME}:27017/?replicaSet=rs0
-
-# For read preference:
-mongodb://admin:[PASSWORD]@flux{MONGO_COMPONENT_NAME}_{APPNAME}:27017/?replicaSet=rs0&readPreference=secondaryPreferred
+mongodb://admin:[PASSWORD]@flux{MONGO_COMPONENT_NAME}_{APPNAME}:[MONGO_PORT]/
 ```
 
 **For external connections (from host machine or remote clients):**
 ```
-Host: localhost (or server IP)
-Port: 27017
+Host: (node IP)
+Port: [MONGO_PORT]
 Database: admin
 Username: admin
 Password: [MONGO_INITDB_ROOT_PASSWORD]
 
 Example connection string:
-mongodb://admin:[PASSWORD]@localhost:27017/?replicaSet=rs0
+mongodb://admin:[PASSWORD]@localhost:[MONGO_PORT]/
 ```
 
 **For local testing with multiple nodes:**
