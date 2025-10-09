@@ -5,18 +5,6 @@
 
 This project creates a self-configuring, highly-available MongoDB replica set that dynamically discovers its members through the Flux API. The cluster automatically adapts to nodes being added or removed from the environment.
 
-## Architecture
-
-- **Single Docker Image**: Contains MongoDB 7.0, Node.js, and automation controller
-- **Geographic Distribution**: Each instance runs on a different physical Flux node (potentially worldwide)
-- **Public Internet Replication**: MongoDB nodes communicate over the public internet using their public IPs
-- **Auto IP Detection**: Automatically detects public IP for proper cluster formation
-- **Dynamic Discovery**: Calls Flux API to discover cluster members' public IP addresses
-- **Auto-Configuration**: Generates replica set configuration based on live API data
-- **Self-Healing**: Periodically updates cluster membership to match API state
-- **Leader Election**: Deterministic primary selection using lowest IP address
-- **REST API**: Built-in HTTP API for cluster status and monitoring
-
 ## Prerequisites
 
 - Docker
@@ -63,15 +51,14 @@ Key Points:
 - **Automatic Failover**: If PRIMARY fails, a SECONDARY is automatically elected as new PRIMARY
 
 **Application Implementation Requirements:**
-1. **Use replica set connection string** (not direct connection):
+1. **Use this format for connection string** :
    ```
-   mongodb://admin:password@fluxMONGO_APPNAME:27017/?replicaSet=rs0
+   mongodb://admin:[PASSWORD]@flux{MONGO_COMPONENT_NAME}_{APPNAME}:27017/?directConnection=true&authSource=admin
    ```
-   This allows automatic failover when PRIMARY changes.
 
 2. **Handle write failures gracefully**:
    - If your app connects to a SECONDARY and tries to write, it will receive a `NotWritablePrimary` error
-   - Use replica set aware drivers that automatically route writes to PRIMARY
+   - you can use 
 
 3. **Read preference options**:
    - `primary` (default): All reads go to PRIMARY
@@ -100,25 +87,10 @@ Key Points:
    - Use your application's Docker image
    - Set MongoDB connection string to point to local MongoDB instance:
      ```
-     MONGODB_URI=mongodb://admin:password@fluxMONGO_APPNAME:27017/?replicaSet=rs0
+     mongodb://admin:[PASSWORD]@flux{MONGO_COMPONENT_NAME}_{APPNAME}:27017/?directConnection=true&authSource=admin
      ```
-   - Deploy the same number of instances as MongoDB (1:1 ratio)
 
-3. **Connection String Format**:
-   ```bash
-   # Basic connection (automatic failover enabled)
-   mongodb://admin:[PASSWORD]@flux{MONGO_COMPONENT_NAME}_{APPNAME}:27017/?replicaSet=rs0
-
-   # With read preference (recommended for read-heavy workloads)
-   mongodb://admin:[PASSWORD]@flux{MONGO_COMPONENT_NAME}_{APPNAME}:27017/?replicaSet=rs0&readPreference=primaryPreferred
-   ```
-
-   **Important**: Always include `?replicaSet=rs0` in the connection string. This enables:
-   - Automatic PRIMARY discovery
-   - Automatic failover when PRIMARY changes
-   - Proper routing of read/write operations
-
-4. **Monitor your cluster**:
+3. **Monitor your cluster**:
    - Connect to any node with mongosh
    - Check cluster status with `rs.status()`
    - View replica set configuration with `rs.config()`
