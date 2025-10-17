@@ -73,11 +73,13 @@ Key Points:
    - For the `Domains` field, add this: `["",""]`.
    - Set environment variables for the MongoDB:
      ```json
-     "APP_NAME=your-app-name",
-     "MONGO_REPLICA_SET_NAME=rs0",
-     "MONGO_INITDB_ROOT_USERNAME=admin",
-     "MONGO_INITDB_ROOT_PASSWORD=your-super-secret-password",
-     "MONGO_KEYFILE_PASSPHRASE=your-keyfile-passphrase"
+     [
+      "APP_NAME=your-app-name",
+      "MONGO_REPLICA_SET_NAME=rs0",
+      "MONGO_INITDB_ROOT_USERNAME=admin",
+      "MONGO_INITDB_ROOT_PASSWORD=your-super-secret-password",
+      "MONGO_KEYFILE_PASSPHRASE=your-keyfile-passphrase"
+     ]
      ```
 
 2. **Add your Application (optional)**:
