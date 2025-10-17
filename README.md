@@ -64,18 +64,21 @@ Key Points:
 #### Deployment Steps
 
 1. **Deploy MongoDB Cluster on Flux**:
-   - Add a component for MongoDB
-   - Use the official Docker image: `runonflux/flux-mongodb-cluster:latest`
+   - Log in to home.runonflux.io and navigate to Applications > Register New App.
+   - Add a component for MongoDB.
+   - Use the official Docker image: `runonflux/flux-mongodb-cluster:latest`.
+   - Set Container Data for the component to `/data/db`.
+   - Add these ports to the `Cont. Ports` field: `[28017, 3000]`.
+   - Using the `Ports` field, map those ports to new ones, for example: `[28017,3100]`.
+   - For the `Domains` field, add this: `["",""]`.
    - Set environment variables for the MongoDB:
+     ```json
+     "APP_NAME=your-app-name",
+     "MONGO_REPLICA_SET_NAME=rs0",
+     "MONGO_INITDB_ROOT_USERNAME=admin",
+     "MONGO_INITDB_ROOT_PASSWORD=your-super-secret-password",
+     "MONGO_KEYFILE_PASSPHRASE=your-keyfile-passphrase"
      ```
-     APP_NAME=your-app-name
-     MONGO_REPLICA_SET_NAME=rs0
-     MONGO_INITDB_ROOT_USERNAME=admin
-     MONGO_INITDB_ROOT_PASSWORD=your-super-secret-password
-     MONGO_KEYFILE_PASSPHRASE=your-keyfile-passphrase
-     ```
-   - Set Container Data for the component to `/data/db`
-   - Deploy 3 or more instances for high availability
 
 2. **Add your Application (optional)**:
    - Add a component for your application
