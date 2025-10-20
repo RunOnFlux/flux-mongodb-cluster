@@ -404,7 +404,8 @@ async function getLatestOplogTimestamp() {
 }
 
 // Get MongoDB cluster entries from /etc/hosts file
-function getClusterHostsEntries() {
+// If useExternalIP is true, replace localhost/127.0.0.1 with actual public IP for self
+function getClusterHostsEntries(useExternalIP = false) {
   try {
     const hostsContent = fs.readFileSync('/etc/hosts', 'utf8');
     const lines = hostsContent.split('\n');
@@ -420,8 +421,15 @@ function getClusterHostsEntries() {
       if (line.includes('.mongo-cluster')) {
         const parts = line.trim().split(/\s+/);
         if (parts.length >= 2) {
-          const ip = parts[0];
+          let ip = parts[0];
           const hostname = parts[1];
+
+          // If external IP mode is enabled and this is our own hostname,
+          // replace 127.0.0.1 with the actual public IP
+          if (useExternalIP && hostname === myHostname && (ip === '127.0.0.1' || ip === 'localhost')) {
+            ip = myIP;
+          }
+
           clusterEntries.push({ ip, hostname });
         }
       }
@@ -1198,10 +1206,13 @@ app.get('/oplog', async (req, res) => {
 
 app.get('/hosts', (req, res) => {
   try {
-    const entries = getClusterHostsEntries();
+    // Check if external=true query parameter is set
+    const useExternalIP = req.query.external === 'true';
+    const entries = getClusterHostsEntries(useExternalIP);
     res.json({
       entries,
-      count: entries.length
+      count: entries.length,
+      external: useExternalIP
     });
   } catch (error) {
     res.status(500).json({ error: error.message });

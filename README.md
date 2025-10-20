@@ -1,5 +1,5 @@
 # Flux MongoDB Cluster
-![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)
+![Version](https://img.shields.io/badge/version-1.1.1-blue.svg)
 ![MongoDB](https://img.shields.io/badge/MongoDB-7.0-green.svg)
 ![Docker](https://img.shields.io/badge/Docker-required-blue.svg)
 
@@ -144,8 +144,31 @@ The built-in REST API provides cluster monitoring:
 - `GET /members` - List of replica set members
 - `GET /primary` - Current primary node information
 - `GET /info` - Node information (IP, replica set name, etc.)
+- `GET /oplog` - Latest oplog timestamp information
+- `GET /hosts` - MongoDB cluster hostnames from /etc/hosts file
+  - `GET /hosts` - Returns internal IPs (127.0.0.1 for self, public IPs for peers)
+  - `GET /hosts?external=true` - Returns all public IPs (useful for external connections)
 
 Access the API at `http://[node-ip]:3000` (or the port specified in `API_PORT`)
+
+#### `/hosts` Endpoint Usage
+
+The `/hosts` endpoint helps applications connect to the MongoDB replica set by providing hostname-to-IP mappings:
+
+**For applications in the same Docker network (local connections):**
+```bash
+curl http://flux{MONGO_COMPONENT_NAME}_{APPNAME}:3000/hosts
+```
+
+**For external applications (remote connections):**
+```bash
+curl http://node-ip:{API_PORT}/hosts?external=true
+```
+
+**Use Case:** Applications that want to use replica set connection strings can call this endpoint to generate their own `/etc/hosts` file, allowing them to resolve MongoDB cluster hostnames properly. This is particularly useful for:
+- Apps deployed alongside MongoDB in a Docker Compose on Flux network
+- External tools that need to connect to the replica set using hostnames
+- Applications that prefer replica set connection strings over direct connections
 
 ### Cluster Management
 
