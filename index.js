@@ -403,6 +403,37 @@ async function getLatestOplogTimestamp() {
   }
 }
 
+// Get MongoDB cluster entries from /etc/hosts file
+function getClusterHostsEntries() {
+  try {
+    const hostsContent = fs.readFileSync('/etc/hosts', 'utf8');
+    const lines = hostsContent.split('\n');
+    const clusterEntries = [];
+
+    for (const line of lines) {
+      // Skip empty lines and comments
+      if (!line.trim() || line.trim().startsWith('#')) {
+        continue;
+      }
+
+      // Look for lines containing .mongo-cluster
+      if (line.includes('.mongo-cluster')) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length >= 2) {
+          const ip = parts[0];
+          const hostname = parts[1];
+          clusterEntries.push({ ip, hostname });
+        }
+      }
+    }
+
+    return clusterEntries;
+  } catch (error) {
+    log(`Error reading /etc/hosts: ${error.message}`);
+    return [];
+  }
+}
+
 // Query peers about who they think is PRIMARY
 async function checkPeerPrimaryConsensus(peerIPs) {
   log('Checking peer consensus on PRIMARY...');
@@ -1160,6 +1191,18 @@ app.get('/oplog', async (req, res) => {
         timestamp: null
       });
     }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/hosts', (req, res) => {
+  try {
+    const entries = getClusterHostsEntries();
+    res.json({
+      entries,
+      count: entries.length
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
