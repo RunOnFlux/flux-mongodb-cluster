@@ -68,7 +68,7 @@ Key Points:
    - Add a component for MongoDB.
    - Use the official Docker image: `runonflux/flux-mongodb-cluster:latest`.
    - Set Container Data for the component to `/data/db`.
-   - Add these ports to the `Cont. Ports` field: `[28017, 3000]`.
+   - Add these ports to the `Cont. Ports` field: `[27017, 3000]`.
    - Using the `Ports` field, map those ports to new ones, for example: `[28017,3100]`.
    - For the `Domains` field, add this: `["",""]`.
    - Set environment variables for the MongoDB:
