@@ -265,3 +265,9 @@ For issues related to:
 - MongoDB: Consult [MongoDB documentation](https://docs.mongodb.com/)
 - Flux API: Visit [Flux documentation](https://docs.runonflux.io/)
 - This project: Open an issue in the repository
+
+## Related Projects
+
+- Flux Postgres Cluster: [https://github.com/RunOnFlux/flux-pg-cluster](https://github.com/RunOnFlux/flux-pg-cluster)
+- Flux Mysql Cluster: [https://github.com/RunOnFlux/Flux-Shared-DB](https://github.com/RunOnFlux/Flux-Shared-DB)
+- Flux Redis Cluster: [https://github.com/RunOnFlux/flux-redis-cluster](https://github.com/RunOnFlux/flux-redis-cluster)
