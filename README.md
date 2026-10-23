@@ -98,6 +98,36 @@ Key Points:
 
 ## Configuration
 
+### Security update: rotate previously derived keyfiles
+
+Earlier versions derived the same insecure key (`A` repeated 756 times) for
+every `MONGO_KEYFILE_PASSPHRASE`, regardless of its value or salt. Treat any
+reachable deployment that used this key as potentially compromised. Restrict
+network access immediately and review database users, data, and replica set
+configuration. Changing the admin password alone does not fix this issue.
+
+The corrected derivation uses PBKDF2-HMAC-SHA256 with 600,000 iterations, the
+full configured salt, and a 32-byte output encoded as base64. All members must
+use the same strong passphrase and salt. Updated containers refuse to start
+with the known insecure key, including a key already on disk. **Coordinate
+the update across all members; upgrading an affected member will stop it
+until its key is rotated.**
+
+To migrate, restrict access and stop the affected replica set during a
+maintenance window. Back up the data and replace
+`/data/configdb/mongodb-keyfile` on **every** member with the same new random
+key, or remove only that keyfile so the corrected derivation creates it on
+restart. Preserve the database files. If supplying a key manually, set its
+owner to `mongodb:mongodb` and permissions to `400`. Then restart the members
+with the updated image and verify replication before restoring access.
+
+Alternatively, generate a shared random key with `openssl rand -base64 756`
+and supply it as `MONGO_KEYFILE_CONTENT` in an encrypted Enterprise spec.
+An existing keyfile takes precedence over both environment variables, so
+setting this variable alone does **not** rotate a key already on disk.
+Secure keyfiles originally supplied through `MONGO_KEYFILE_CONTENT` or
+generated randomly are preserved.
+
 ### Environment Variables
 
 | Variable | Description | Default |

@@ -4,7 +4,8 @@
   "description": "Self-configuring MongoDB replica set for Flux infrastructure",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node --test tests/keyfile.test.js"
   },
   "dependencies": {
     "express": "^4.18.2",

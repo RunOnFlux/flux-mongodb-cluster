@@ -84,31 +84,88 @@ generate_keyfile_from_passphrase() {
     local passphrase="$1"
     local salt="${MONGO_KEYFILE_SALT:-mongodb-flux-cluster-salt}"
 
-    # Use PBKDF2 with SHA-256 to derive a deterministic key from the passphrase
-    # This ensures all nodes with the same passphrase generate the same keyfile
-    openssl enc -pbkdf2 -pass pass:"${passphrase}" -S "$(echo -n "$salt" | xxd -p)" \
-        -md sha256 -iter 10000 -a -A 2>/dev/null < /dev/zero | head -c 756
+    # Derive 256 bits directly, then encode as a MongoDB-compatible base64 key.
+    # Node.js is already required by the controller. This avoids enc's optional
+    # cipher, OpenSSL salt-format differences, and passing secrets in argv.
+    if ! command -v node >/dev/null 2>&1; then
+        log "ERROR: Node.js is required to derive the MongoDB keyfile"
+        return 1
+    fi
+
+    MONGO_KEYFILE_PASSPHRASE="$passphrase" MONGO_KEYFILE_SALT="$salt" node -e '
+        const { pbkdf2Sync } = require("node:crypto");
+        const key = pbkdf2Sync(process.env.MONGO_KEYFILE_PASSPHRASE,
+            process.env.MONGO_KEYFILE_SALT, 600000, 32, "sha256");
+        if (key.every(byte => byte === key[0])) {
+            throw new Error("Refusing a constant MongoDB keyfile");
+        }
+        process.stdout.write(key.toString("base64"));
+    ' || return 1
+}
+
+validate_keyfile() {
+    if ! command -v node >/dev/null 2>&1; then
+        log "ERROR: Node.js is required to validate the MongoDB keyfile"
+        return 1
+    fi
+
+    node - "$1" <<'NODE'
+const fs = require('node:fs');
+try {
+    const key = fs.readFileSync(process.argv[2], 'utf8').replace(/\s/g, '');
+    // Check each key, including quoted YAML sequences used for key rotation.
+    // Also catches zero-filled keys encoded as base64 with padding.
+    if (!key || /(?:^|[^A-Za-z0-9+/=])A{6,}={0,2}(?=$|[^A-Za-z0-9+/=])/.test(key)) {
+        throw new Error('Empty or known insecure MongoDB keyfile; rotate the key on all members');
+    }
+} catch (error) {
+    console.error('MongoDB keyfile validation failed: ' + error.message);
+    process.exitCode = 1;
+}
+NODE
 }
 
 # Function to generate or use existing keyfile for replica set authentication
 setup_keyfile() {
-    if [ ! -f "$KEYFILE_PATH" ]; then
-        if [ ! -z "$MONGO_KEYFILE_CONTENT" ]; then
-            log "Using provided MongoDB keyfile from environment..."
-            echo "$MONGO_KEYFILE_CONTENT" > "$KEYFILE_PATH"
-        elif [ ! -z "$MONGO_KEYFILE_PASSPHRASE" ]; then
-            log "Generating deterministic MongoDB keyfile from passphrase..."
-            generate_keyfile_from_passphrase "$MONGO_KEYFILE_PASSPHRASE" > "$KEYFILE_PATH"
-            log "Keyfile generated successfully from passphrase"
-        else
-            log "WARNING: Generating random MongoDB keyfile (not suitable for multi-node production)..."
-            openssl rand -base64 756 > "$KEYFILE_PATH"
-        fi
-
-        chmod 400 "$KEYFILE_PATH"
-        chown mongodb:mongodb "$KEYFILE_PATH"
-    else
+    if [ -f "$KEYFILE_PATH" ]; then
+        validate_keyfile "$KEYFILE_PATH" || return 1
         log "Using existing MongoDB keyfile"
+        return 0
+    fi
+
+    # Write atomically: a failed tool must not leave an empty/partial keyfile
+    # that a subsequent startup could mistake for an existing key.
+    local temporary_keyfile
+    temporary_keyfile=$(mktemp "${KEYFILE_PATH}.tmp.XXXXXX") || return 1
+
+    if [ -n "$MONGO_KEYFILE_CONTENT" ]; then
+        log "Using provided MongoDB keyfile from environment..."
+        if ! printf '%s\n' "$MONGO_KEYFILE_CONTENT" > "$temporary_keyfile"; then
+            rm -f -- "$temporary_keyfile"
+            return 1
+        fi
+    elif [ -n "$MONGO_KEYFILE_PASSPHRASE" ]; then
+        log "Generating deterministic MongoDB keyfile from passphrase..."
+        if ! generate_keyfile_from_passphrase "$MONGO_KEYFILE_PASSPHRASE" > "$temporary_keyfile"; then
+            rm -f -- "$temporary_keyfile"
+            return 1
+        fi
+    else
+        log "WARNING: Generating random MongoDB keyfile (not suitable for multi-node production)..."
+        if ! openssl rand -base64 756 > "$temporary_keyfile"; then
+            rm -f -- "$temporary_keyfile"
+            return 1
+        fi
+    fi
+
+    # Explicitly check failures: main calls setup_keyfile in an if condition,
+    # which disables Bash errexit throughout the function and its callees.
+    if ! validate_keyfile "$temporary_keyfile" || \
+       ! chmod 400 "$temporary_keyfile" || \
+       ! chown mongodb:mongodb "$temporary_keyfile" || \
+       ! mv -f -- "$temporary_keyfile" "$KEYFILE_PATH"; then
+        rm -f -- "$temporary_keyfile"
+        return 1
     fi
 }
 

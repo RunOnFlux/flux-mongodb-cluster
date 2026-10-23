@@ -4,8 +4,7 @@ CLAUDE.md
 .claude/
 .claude/settings.local.json
 
-# Test files and dependencies
-tests/
+# Dependencies
 node_modules/
 
 # MongoDB data directories
