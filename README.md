@@ -11,6 +11,10 @@ This project creates a self-configuring, highly-available MongoDB replica set th
 - Docker Compose
 - Access to Flux network for API calls
 
+The container uses Node.js 24 LTS. For local controller development, use Node.js
+24 or newer and install the committed dependency versions with `npm ci`.
+Run `npm test` and `npm audit --omit=dev` before submitting dependency updates.
+
 ## Quick Start
 
 ### Production Deployment on Flux Network
